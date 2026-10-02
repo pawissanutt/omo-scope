@@ -325,7 +325,7 @@ impl Store {
         let mut seen = HashSet::new();
         self.walk(session, 0, &by_parent, &mut seen, &mut out);
         let mut orphans: Vec<&Task> = members.into_iter().filter(|t| !seen.contains(t.id.as_str())).collect();
-        orphans.sort_by(|a, b| a.created.cmp(&b.created));
+        orphans.sort_by_key(|t| t.created);
         out.extend(orphans.into_iter().map(|t| (0, t)));
         out
     }
