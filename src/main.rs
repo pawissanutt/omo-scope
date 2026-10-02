@@ -1,4 +1,5 @@
 mod app;
+mod diff;
 mod herdr;
 mod live;
 mod store;

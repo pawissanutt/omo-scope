@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use jiff::Timestamp;
 use serde_json::Value;
 
+use crate::diff::{self, DiffLine};
 use crate::text::{clip, first_line, sanitize};
 
 pub struct Tail {
@@ -94,6 +95,7 @@ pub struct Entry {
     pub result: Option<ToolResult>,
     pub at: Option<Timestamp>,
     pub command: String,
+    pub diff: Vec<DiffLine>,
 }
 
 impl Entry {
@@ -106,6 +108,7 @@ impl Entry {
             result: None,
             at,
             command: String::new(),
+            diff: Vec::new(),
         }
     }
 
@@ -213,7 +216,12 @@ impl Transcript {
                 "toolCall" => {
                     let args = &block["arguments"];
                     let name = sanitize(str_of(&block["name"]));
+                    let change = diff::from_call(&name, args, self.cwd.as_deref());
                     let mut e = Entry::new(Kind::Tool, name, summarize_args(args), at);
+                    if let Some(c) = change {
+                        e.text = c.summary;
+                        e.diff = c.lines;
+                    }
                     e.detail = sanitize(&serde_json::to_string_pretty(args).unwrap_or_default());
                     e.command = match args["command"].as_str() {
                         Some(c) => sanitize(c),

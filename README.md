@@ -30,6 +30,9 @@ Mouse: click the session title to pick a session, click tabs, rows and log entri
 resume auto-scroll. Keys: `s` sessions, `t` tasks/DAG, `z` zoom log, `x` expand all,
 `f` follow, `Tab` focus, `j`/`k` move, `q` quit (closes the pane when started by `open`).
 
+File changes (`apply_patch`, `write`, `edit`) show as a colored diff with `+N -M` counts as soon as
+the call is logged; click to expand the full diff.
+
 Live granularity is per transcript entry: OmO keeps token deltas in memory only, so text
 appears when each message completes. The footer shows the running tool and its elapsed time.
 While a `bash` call (or a `tool.bash` inside `eval`) runs, omo-scope tails the file the

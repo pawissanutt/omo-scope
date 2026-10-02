@@ -364,6 +364,7 @@ fn draw_log_title(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 const OPEN_LIMIT: usize = 2000;
+const DIFF_PREVIEW: usize = 6;
 
 fn block(out: &mut Vec<Line<'static>>, text: &str, indent: usize, width: usize, limit: usize, style: Style) {
     block_pad(out, text, &" ".repeat(indent), width, limit, style);
@@ -457,6 +458,20 @@ fn tool_lines(lines: &mut Vec<Line<'static>>, e: &Entry, open: bool, width: usiz
     ]));
     if let Some(l) = live {
         live_lines(lines, l, open, width);
+    }
+    if !e.diff.is_empty() {
+        crate::diff::render(&e.diff, width, if open { OPEN_LIMIT } else { DIFF_PREVIEW }, lines);
+        if let Some(r) = e.result.as_ref().filter(|r| r.is_error) {
+            block(
+                lines,
+                &r.text,
+                6,
+                width,
+                if open { 400 } else { 3 },
+                Style::new().fg(Color::Red),
+            );
+        }
+        return;
     }
     let out_style = match &e.result {
         Some(r) if r.is_error => Style::new().fg(Color::Red),
