@@ -4,6 +4,10 @@ View-only, mouse-driven TUI for OmO subagent tasks, DAG runs and live child tran
 It reads only files (`<project>/.omo/senpi-task/` and `~/.omo/agent/sessions/`); no OmO
 extension, patch or transport is involved.
 
+![omo-scope following a DAG run: clicking nodes, expanding tool calls, a live test log, dragging the splitter and the session picker](demo/omo-scope.gif)
+
+<sub>Recorded from a fabricated project with `demo/record.py` (real keystrokes and mouse events).</sub>
+
 Install a prebuilt binary (Linux/macOS, x86_64/arm64; no Rust needed) into `~/.local/bin`:
 
 ```bash

@@ -548,9 +548,7 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_picker(f: &mut Frame, app: &mut App, area: Rect) {
     app.hits.clear();
-    let w = area.width.saturating_sub(4).clamp(20, 110);
-    let h = area.height.saturating_sub(2).max(3);
-    let rect = Rect::new(area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h);
+    let rect = Rect::new(area.x, area.y + 1, area.width, area.height.saturating_sub(2));
     f.render_widget(Clear, rect);
     let block = Block::new()
         .borders(Borders::ALL)
@@ -588,7 +586,7 @@ fn draw_picker(f: &mut Frame, app: &mut App, area: Rect) {
             (n, 0) => format!("{n} tasks"),
             (n, a) => format!("{n} tasks, {a} live"),
         };
-        let left = format!("{mark} {:<11} {:<17} ", fmt_time(s.modified), tasks);
+        let left = format!("{mark} {:<12} {:<17} ", fmt_time(s.modified), tasks);
         let title = if s.title.is_empty() {
             s.id.as_str()
         } else {
