@@ -7,6 +7,7 @@ use jiff::Timestamp;
 use serde_json::Value;
 
 use crate::diff::{self, DiffLine};
+use crate::pinned::{Goal, Plan};
 use crate::stats::Usage;
 use crate::text::{clip, first_line, sanitize};
 
@@ -87,6 +88,15 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
+/// A subagent task referenced by a tool call; rendered as a clickable line with its live status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Link {
+    pub task: String,
+    pub name: String,
+    pub note: String,
+    pub error: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct Entry {
     pub kind: Kind,
@@ -97,10 +107,13 @@ pub struct Entry {
     pub at: Option<Timestamp>,
     pub command: String,
     pub diff: Vec<DiffLine>,
+    /// Replaces the collapsed result preview; empty hides it. Errors always show the result.
+    pub preview: Option<String>,
+    pub links: Vec<Link>,
 }
 
 impl Entry {
-    fn new(kind: Kind, title: impl Into<String>, text: impl Into<String>, at: Option<Timestamp>) -> Self {
+    pub(crate) fn new(kind: Kind, title: impl Into<String>, text: impl Into<String>, at: Option<Timestamp>) -> Self {
         Self {
             kind,
             title: title.into(),
@@ -110,6 +123,8 @@ impl Entry {
             at,
             command: String::new(),
             diff: Vec::new(),
+            preview: None,
+            links: Vec::new(),
         }
     }
 
@@ -124,7 +139,10 @@ pub struct Transcript {
     pub last_at: Option<Timestamp>,
     pub cwd: Option<PathBuf>,
     pub usage: Usage,
-    open: HashMap<String, usize>,
+    pub plan: Option<Plan>,
+    pub goal: Option<Goal>,
+    names: HashMap<String, String>,
+    open: HashMap<String, (usize, Value)>,
 }
 
 impl Transcript {
@@ -143,17 +161,27 @@ impl Transcript {
             }
             "compaction" => self.push_summary("compacted", &v["summary"], at),
             "branch_summary" => self.push_summary("branch summary", &v["summary"], at),
-            "custom_message" if v["display"].as_bool() == Some(true) => {
-                let text = content_text(&v["content"]);
-                self.entries
-                    .push(Entry::new(Kind::Note, sanitize(str_of(&v["customType"])), text, at));
+            "custom" if v["customType"].as_str() == Some("senpi.todo-state") => {
+                self.plan = Plan::from_state(&v["data"]);
+            }
+            "custom_message" => {
+                if v["customType"].as_str() == Some("goal-continuation")
+                    && let Some(g) = self.goal.as_mut()
+                {
+                    g.wakes += 1;
+                }
+                if v["display"].as_bool() == Some(true) {
+                    let text = content_text(&v["content"]);
+                    self.entries
+                        .push(Entry::new(Kind::Note, sanitize(str_of(&v["customType"])), text, at));
+                }
             }
             _ => {}
         }
     }
 
     pub fn running_index(&self) -> Option<usize> {
-        self.open.values().max().copied()
+        self.open.values().map(|(i, _)| *i).max()
     }
 
     pub fn running_tool(&self) -> Option<&Entry> {
@@ -177,14 +205,20 @@ impl Transcript {
                     text: content_text(&m["content"]),
                     is_error: m["isError"].as_bool().unwrap_or(false),
                 };
-                match self.open.remove(str_of(&m["toolCallId"])) {
-                    Some(i) => self.entries[i].result = Some(result),
-                    None => {
-                        let mut e = Entry::new(Kind::Tool, sanitize(str_of(&m["toolName"])), "", at);
-                        e.result = Some(result);
-                        self.entries.push(e);
-                    }
+                if !result.is_error && str_of(&m["toolName"]).ends_with("_goal") {
+                    self.set_goal(&m["details"], &result.text);
                 }
+                let (i, args) = match self.open.remove(str_of(&m["toolCallId"])) {
+                    Some(open) => open,
+                    None => {
+                        let name = sanitize(str_of(&m["toolName"]));
+                        self.entries.push(Entry::new(Kind::Tool, name, "", at));
+                        (self.entries.len() - 1, Value::Null)
+                    }
+                };
+                let e = &mut self.entries[i];
+                e.result = Some(result);
+                crate::tools::result(e, &args, m, &mut self.names);
             }
             "bashExecution" => {
                 let mut e = Entry::new(Kind::Tool, "bash", sanitize(str_of(&m["command"])), at);
@@ -208,7 +242,7 @@ impl Transcript {
     fn push_assistant(&mut self, m: &Value, at: Option<Timestamp>) {
         // The agent loop only starts a new assistant turn after every prior tool call
         // has returned, so calls still open here were abandoned (abort, crash, reload).
-        for (_, i) in self.open.drain() {
+        for (_, (i, _)) in self.open.drain() {
             let text = "(no result recorded)".to_string();
             self.entries[i].result = Some(ToolResult { text, is_error: true });
         }
@@ -230,7 +264,9 @@ impl Transcript {
                         Some(c) => sanitize(c),
                         None => sanitize(&embedded_commands(args["code"].as_str().unwrap_or(""))),
                     };
-                    self.open.insert(str_of(&block["id"]).to_string(), self.entries.len());
+                    crate::tools::call(&mut e, args, self.cwd.as_deref());
+                    let open = (self.entries.len(), args.clone());
+                    self.open.insert(str_of(&block["id"]).to_string(), open);
                     self.entries.push(e);
                 }
                 _ => {}
@@ -243,6 +279,29 @@ impl Transcript {
             }
             Some("aborted") => self.entries.push(Entry::new(Kind::Error, "aborted", "", at)),
             _ => {}
+        }
+    }
+
+    /// `details.goal` of a goal-tool result (or the JSON text when details are missing); null clears it.
+    fn set_goal(&mut self, details: &Value, text: &str) {
+        let parsed;
+        let root = if details.get("goal").is_some() {
+            details
+        } else {
+            parsed = serde_json::from_str::<Value>(text).unwrap_or_default();
+            &parsed
+        };
+        match root.get("goal") {
+            Some(Value::Null) => self.goal = None,
+            Some(g) => {
+                if let Some(mut goal) = Goal::from_json(g) {
+                    if let Some(old) = self.goal.as_ref().filter(|o| o.objective == goal.objective) {
+                        goal.wakes = old.wakes;
+                    }
+                    self.goal = Some(goal);
+                }
+            }
+            None => {}
         }
     }
 
@@ -323,7 +382,7 @@ const ARG_KEYS: &[&str] = &[
     "code",
 ];
 
-fn summarize_args(args: &Value) -> String {
+pub(crate) fn summarize_args(args: &Value) -> String {
     for key in ARG_KEYS {
         if let Some(s) = args[*key].as_str() {
             return clip(&sanitize(first_line(s)), 200);

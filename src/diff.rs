@@ -33,7 +33,7 @@ fn line(mark: Mark, text: &str) -> DiffLine {
     }
 }
 
-fn short(path: &str, cwd: Option<&Path>) -> String {
+pub(crate) fn short(path: &str, cwd: Option<&Path>) -> String {
     let rel = cwd
         .and_then(|c| Path::new(path).strip_prefix(c).ok())
         .map(|p| p.to_string_lossy().into_owned());

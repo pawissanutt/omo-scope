@@ -24,6 +24,11 @@ transport to install.
   `*.log`), including `tool.bash` calls inside `eval`.
 - **File edits as diffs**: `apply_patch`, `write` and `edit` calls render as colored diffs with
   `+N -M` counts.
+- **Pinned plan and goal**: the subagent's todo list and goal stay pinned above the log with
+  progress, the current step, tokens and time; `p` expands them.
+- **Readable tool calls**: subagent calls link to their child task with its live status (click
+  to jump there); `eval` shows language, summary, timing and nested tool calls; `read`,
+  `memory` and `todo` collapse to one line.
 - **Reasoning**: thinking blocks in preview, full or hidden mode.
 - **Stats**: turns, tools, tok/s, context use, cache hits and cost in the log title bar and
   task rows, picked and ordered from a settings menu.
@@ -41,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/pawissanutt/omo-scope/main/install.
 ```
 
 It installs to `~/.local/bin` after verifying the release checksum. Set
-`OMO_SCOPE_INSTALL_DIR` or `OMO_SCOPE_VERSION` (for example `v0.2.0`) to change that.
+`OMO_SCOPE_INSTALL_DIR` or `OMO_SCOPE_VERSION` (for example `v0.3.0`) to change that.
 From source: `cargo install --git https://github.com/pawissanutt/omo-scope`.
 
 ## Usage
@@ -63,6 +68,8 @@ From an OmO prompt, `!omo-scope open` follows the current session (`$PI_SESSION_
 | click tab | `t` | switch Tasks / DAG |
 | click row | `j` `k` | select a task or DAG node |
 | click log entry | `x` (all) | expand or collapse a prompt, tool call, diff or reasoning block |
+| click the pinned plan / goal bar | `p` | expand or collapse the pinned todo plan and goal above the log |
+| click a `⇢` subagent line | | jump to that child task |
 | wheel | `PgUp` `PgDn` | scroll the pane under the pointer (scrolling up pauses follow) |
 | click `follow` | `f` / `End` | resume auto-scroll |
 | drag the `≡` bar | `+` `-` `=` | resize the list / log split (`=` resets) |

@@ -11,6 +11,8 @@ fn thinking(text: &str) -> Entry {
         at: None,
         command: String::new(),
         diff: Vec::new(),
+        preview: None,
+        links: Vec::new(),
     }
 }
 
@@ -36,11 +38,18 @@ fn edits_render_as_diff_previews_that_expand() {
         text: format!("l{i}"),
     }));
     let entries = vec![e];
-    let closed = text_of(&render_entries(&entries, &HashSet::new(), 60, Reasoning::Preview, None));
+    let closed = text_of(&render_entries(
+        &entries,
+        &HashSet::new(),
+        60,
+        Reasoning::Preview,
+        None,
+        None,
+    ));
     assert_eq!(closed.len(), 8);
     assert_eq!(closed[1].trim(), "+ l0");
     assert!(closed[7].contains("4 more lines"));
-    let open = render_entries(&entries, &HashSet::from([0]), 60, Reasoning::Preview, None);
+    let open = render_entries(&entries, &HashSet::from([0]), 60, Reasoning::Preview, None, None);
     assert_eq!(open.len(), 11);
 }
 
@@ -48,16 +57,40 @@ fn edits_render_as_diff_previews_that_expand() {
 fn reasoning_modes_control_thinking_output() {
     let entries = vec![thinking("**Plan**\na\nb\nc\nd")];
     let none = HashSet::new();
-    assert!(render_entries(&entries, &none, 40, Reasoning::Hidden, None).is_empty());
+    assert!(render_entries(&entries, &none, 40, Reasoning::Hidden, None, None).is_empty());
 
-    let preview = text_of(&render_entries(&entries, &none, 40, Reasoning::Preview, None));
+    let preview = text_of(&render_entries(&entries, &none, 40, Reasoning::Preview, None, None));
     assert_eq!(preview[0], "  │ Plan");
     assert_eq!(preview.len(), 4);
     assert!(preview[3].contains("2 more lines"));
 
-    let full = render_entries(&entries, &none, 40, Reasoning::Full, None);
+    let full = render_entries(&entries, &none, 40, Reasoning::Full, None, None);
     assert_eq!(full.len(), 5);
     assert!(full.iter().all(|l| l.entry == Some(0)));
+}
+
+#[test]
+fn link_lines_follow_the_header_and_target_their_task() {
+    let mut e = thinking("");
+    e.kind = Kind::Tool;
+    e.title = "task_send".into();
+    e.text = "→ fix: go".into();
+    e.result = Some(crate::transcript::ToolResult {
+        text: "lane_capacity".into(),
+        is_error: true,
+    });
+    e.preview = Some(String::new());
+    e.links.push(Link {
+        task: "st_2".into(),
+        name: "fix".into(),
+        note: "lane_capacity".into(),
+        error: true,
+    });
+    let lines = render_entries(&[e], &HashSet::new(), 60, Reasoning::Preview, None, None);
+    let text = text_of(&lines);
+    assert_eq!(text, ["  ✗ task_send → fix: go", "      ⇢ ? fix — lane_capacity"]);
+    assert_eq!((lines[0].entry, lines[0].task.as_deref()), (Some(0), None));
+    assert_eq!((lines[1].entry, lines[1].task.as_deref()), (None, Some("st_2")));
 }
 
 #[test]

@@ -4,10 +4,12 @@ mod diff;
 mod herdr;
 mod live;
 mod locate;
+mod pinned;
 mod settings;
 mod stats;
 mod store;
 mod text;
+mod tools;
 mod transcript;
 mod ui;
 
@@ -37,7 +39,7 @@ Usage:
   --close-pane   close this Herdr pane when the viewer quits
 
 Keys: click/wheel anywhere, s sessions, t tasks/DAG, z zoom log, x expand all,
-      f follow, c settings, Tab focus, j/k move, q quit";
+      p pinned plan/goal, f follow, c settings, Tab focus, j/k move, q quit";
 
 #[derive(Default)]
 struct Opts {

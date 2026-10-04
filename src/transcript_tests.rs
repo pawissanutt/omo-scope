@@ -112,6 +112,42 @@ fn push_feeds_usage_from_assistant_and_compaction_lines() {
 }
 
 #[test]
+fn todo_state_records_set_and_clear_the_plan() {
+    let mut t = Transcript::default();
+    t.push(
+        &json!({"type": "custom", "customType": "senpi.todo-state", "data": {"phases": [
+        {"name": "A", "tasks": [{"content": "x", "status": "in_progress"}]}]}}),
+    );
+    assert_eq!(t.plan.as_ref().map(|p| p.progress()), Some((0, 1)));
+    t.push(&json!({"type": "custom", "customType": "senpi.todo-state", "data": {"phases": []}}));
+    assert!(t.plan.is_none());
+    assert!(t.entries.is_empty());
+}
+
+#[test]
+fn goal_results_track_the_goal_and_count_wakes() {
+    let mut t = Transcript::default();
+    let goal = |id: &str, name: &str, status: &str| {
+        json!({"type": "message", "message": {"role": "toolResult", "toolCallId": id, "toolName": name,
+            "isError": false, "content": [{"type": "text", "text": "{}"}],
+            "details": {"goal": {"objective": "Ship", "status": status, "tokensUsed": 1200}}}})
+    };
+    t.push(&goal("c1", "create_goal", "active"));
+    let wake = json!({"type": "custom_message", "customType": "goal-continuation", "content": "go", "display": false});
+    t.push(&wake);
+    t.push(&wake);
+    t.push(&goal("c2", "update_goal", "complete"));
+    let g = t.goal.as_ref().unwrap();
+    assert_eq!((g.status.as_str(), g.wakes), ("complete", 2));
+    assert_eq!(t.entries[1].preview.as_deref(), Some("complete · 1.2k tok"));
+    t.push(
+        &json!({"type": "message", "message": {"role": "toolResult", "toolCallId": "c3",
+        "toolName": "get_goal", "isError": false, "content": [{"type": "text", "text": "{\"goal\": null}"}]}}),
+    );
+    assert!(t.goal.is_none());
+}
+
+#[test]
 fn hidden_custom_entries_are_skipped() {
     let mut t = Transcript::default();
     t.push(&json!({"type": "custom_message", "customType": "x", "content": "hidden", "display": false}));

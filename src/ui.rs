@@ -10,13 +10,14 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Focus, Hit, LogLine, Reasoning, Row, Tab};
 use crate::live::{KEEP_LINES, Live};
-use crate::store::Task;
+use crate::store::{Store, Task};
 use crate::text::{clip, first_line, fmt_duration, wrap};
-use crate::transcript::{Entry, Kind};
+use crate::transcript::{Entry, Kind, Link};
 
 pub(crate) const DIM: Style = Style::new().fg(Color::DarkGray);
 const BAR: Style = Style::new().bg(Color::Indexed(236));
 const SEL: Style = Style::new().bg(Color::Indexed(238));
+const PIN: Style = Style::new().bg(Color::Indexed(235));
 pub(crate) const SEL_FOCUS: Style = Style::new().bg(Color::Indexed(24));
 pub(crate) const BOLD: Modifier = Modifier::BOLD;
 
@@ -304,7 +305,23 @@ fn draw_log(f: &mut Frame, app: &mut App, area: Rect) {
     }
     let title = Rect::new(area.x, area.y, area.width, head);
     draw_log_title(f, app, title, layout.map(|(meta, _)| meta));
-    let body = Rect::new(area.x, area.y + head, area.width, area.height - head);
+    let rest = area.height - head;
+    let pins = app.log.as_ref().map_or_else(Vec::new, |log| {
+        let room = if app.pin_open { (rest / 2).max(2) } else { 2 };
+        let t = &log.transcript;
+        let width = area.width.saturating_sub(1) as usize;
+        let max = room.min(rest.saturating_sub(3)) as usize;
+        crate::pinned::lines(t.plan.as_ref(), t.goal.as_ref(), app.pin_open, width, max)
+    });
+    let pin_h = pins.len() as u16;
+    for (i, line) in pins.into_iter().enumerate() {
+        let row = Rect::new(area.x, area.y + head + i as u16, area.width, 1);
+        f.render_widget(Paragraph::new("").style(PIN), row);
+        let text = Rect::new(row.x + 1, row.y, row.width.saturating_sub(1), 1);
+        f.render_widget(Paragraph::new(line).style(PIN), text);
+        app.hits.push((row, Hit::Pin));
+    }
+    let body = Rect::new(area.x, area.y + head + pin_h, area.width, rest - pin_h);
     let reasoning = app.reasoning;
     let Some(log) = app.log.as_mut() else {
         f.render_widget(
@@ -321,6 +338,7 @@ fn draw_log(f: &mut Frame, app: &mut App, area: Rect) {
             width as usize,
             reasoning,
             log.live.as_ref(),
+            Some(&app.store),
         );
         log.width = width;
         log.dirty = false;
@@ -340,8 +358,11 @@ fn draw_log(f: &mut Frame, app: &mut App, area: Rect) {
     for (i, l) in log.lines.iter().skip(log.offset).take(log.height).enumerate() {
         let y = body.y + i as u16;
         f.render_widget(Paragraph::new(l.line.clone()), Rect::new(body.x + 1, y, width, 1));
-        if let Some(e) = l.entry {
-            hits.push((Rect::new(body.x, y, body.width, 1), Hit::Entry(e)));
+        let row = Rect::new(body.x, y, body.width, 1);
+        if let Some(t) = &l.task {
+            hits.push((row, Hit::Task(t.clone())));
+        } else if let Some(e) = l.entry {
+            hits.push((row, Hit::Entry(e)));
         }
     }
     app.hits.extend(hits);
@@ -465,6 +486,7 @@ pub fn render_entries(
     width: usize,
     reasoning: Reasoning,
     live: Option<&Live>,
+    store: Option<&Store>,
 ) -> Vec<LogLine> {
     let mut out = Vec::new();
     let think = Style::new().fg(Color::Indexed(246)).add_modifier(Modifier::ITALIC);
@@ -511,9 +533,54 @@ pub fn render_entries(
             }
         }
         let tag = e.collapsible().then_some(i);
-        out.extend(lines.into_iter().map(|line| LogLine { entry: tag, line }));
+        let mut lines = lines.into_iter();
+        let entry = |line| LogLine {
+            entry: tag,
+            task: None,
+            line,
+        };
+        out.extend(lines.next().map(entry));
+        out.extend(e.links.iter().map(|l| LogLine {
+            entry: None,
+            task: Some(l.task.clone()),
+            line: link_line(l, store, width),
+        }));
+        out.extend(lines.map(entry));
     }
     out
+}
+
+fn link_line(l: &Link, store: Option<&Store>, width: usize) -> Line<'static> {
+    let task = store.and_then(|s| s.task(&l.task));
+    let (icon, color) = status_icon(task.map_or("", |t| t.status.as_str()));
+    let name = match task {
+        _ if !l.name.is_empty() => l.name.clone(),
+        Some(t) => t.label.clone(),
+        None => l.task.clone(),
+    };
+    let mut meta: Vec<String> = task
+        .map(|t| vec![t.status.clone(), t.category.clone()])
+        .unwrap_or_default();
+    meta.retain(|m| !m.is_empty());
+    let mut spans = vec![
+        Span::styled("      ⇢ ", DIM),
+        Span::styled(format!("{icon} "), Style::new().fg(color)),
+        Span::styled(name, Style::new().fg(Color::Cyan).add_modifier(Modifier::UNDERLINED)),
+    ];
+    if !meta.is_empty() {
+        spans.push(Span::styled(format!(" · {}", meta.join(" · ")), DIM));
+    }
+    if !l.note.is_empty() {
+        let style = Style::new().fg(if l.error { Color::Red } else { Color::Gray });
+        spans.push(Span::styled(format!(" — {}", l.note), style));
+    }
+    let mut room = width;
+    for s in &mut spans {
+        let clipped = clip(&s.content, room);
+        room = room.saturating_sub(clipped.width());
+        s.content = clipped.into();
+    }
+    Line::from(spans)
 }
 
 fn tool_lines(lines: &mut Vec<Line<'static>>, e: &Entry, open: bool, width: usize, live: Option<&Live>) {
@@ -561,7 +628,10 @@ fn tool_lines(lines: &mut Vec<Line<'static>>, e: &Entry, open: bool, width: usiz
             block(lines, &r.text, 6, width, 400, out_style);
         }
     } else if let Some(r) = &e.result {
-        let preview = first_line(&r.text);
+        let preview = match &e.preview {
+            Some(p) if !r.is_error || !e.links.is_empty() => p.as_str(),
+            _ => first_line(&r.text),
+        };
         if !preview.is_empty() {
             lines.push(Line::styled(clip(&format!("      {preview}"), width), out_style));
         }
@@ -624,7 +694,7 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
         bar.push(format!(" {s} "), BAR.fg(Color::Cyan), None);
     }
     let mut hint = format!(
-        " r:reasoning {} s:session t:tab z:zoom x:expand c:settings q:quit ",
+        " r:reasoning {} s:session t:tab z:zoom x:expand p:plan c:settings q:quit ",
         app.reasoning.label()
     );
     if app.store.invalid() > 0 {

@@ -83,10 +83,13 @@ pub enum Hit {
     CtxUp,
     SaveSettings,
     ResetSettings,
+    Pin,
+    Task(String),
 }
 
 pub struct LogLine {
     pub entry: Option<usize>,
+    pub task: Option<String>,
     pub line: Line<'static>,
 }
 
@@ -159,6 +162,7 @@ pub struct App {
     pub split: Option<u16>,
     pub dragging: bool,
     pub reasoning: Reasoning,
+    pub pin_open: bool,
     pub quit: bool,
     pub dirty: bool,
 }
@@ -197,6 +201,7 @@ impl App {
             split: None,
             dragging: false,
             reasoning: Reasoning::Preview,
+            pin_open: false,
             quit: false,
             dirty: true,
         };
@@ -394,6 +399,11 @@ impl App {
         if changed {
             self.rebuild_rows();
             self.auto_select();
+            if let Some(log) = self.log.as_mut()
+                && log.transcript.entries.iter().any(|e| !e.links.is_empty())
+            {
+                log.dirty = true;
+            }
         }
         changed |= self.poll_log();
         let live = self
@@ -444,6 +454,7 @@ impl App {
             KeyCode::Char('f' | 'G') | KeyCode::End => self.follow_bottom(),
             KeyCode::Char('g') | KeyCode::Home => self.scroll_log(isize::MIN / 2),
             KeyCode::Char('x') => self.toggle_all(),
+            KeyCode::Char('p') => self.pin_open = !self.pin_open,
             KeyCode::Char('r') => {
                 self.reasoning = self.reasoning.next();
                 if let Some(log) = self.log.as_mut() {
@@ -462,6 +473,24 @@ impl App {
             KeyCode::PageUp => self.move_sel(-10),
             KeyCode::PageDown => self.move_sel(10),
             _ => {}
+        }
+    }
+
+    /// Selects the row of a linked subagent task, switching to the Tasks tab when needed.
+    fn jump_to(&mut self, id: String) {
+        let find = |app: &Self| {
+            app.rows
+                .iter()
+                .position(|r| app.row_task(r).as_deref() == Some(id.as_str()))
+        };
+        let mut row = find(self);
+        if row.is_none() && self.tab != Tab::Tasks {
+            self.switch_tab(Tab::Tasks);
+            row = find(self);
+        }
+        match row {
+            Some(i) => self.select(i),
+            None => self.open_log(id),
         }
     }
 
@@ -599,6 +628,8 @@ impl App {
             Hit::CtxUp => self.settings_op(Op::CtxUp),
             Hit::ResetSettings => self.settings_op(Op::Reset),
             Hit::SaveSettings => self.save_settings(),
+            Hit::Pin => self.pin_open = !self.pin_open,
+            Hit::Task(id) => self.jump_to(id),
         }
     }
 
