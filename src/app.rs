@@ -7,8 +7,12 @@ use ratatui::crossterm::event::{
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 
+use crate::config::Config;
 use crate::live::{self, Live};
-use crate::store::{SessionIndex, SessionInfo, Store, project_root, sessions_dir};
+use crate::locate::locate;
+use crate::settings::{Op, Settings};
+use crate::stats::Stats;
+use crate::store::{SessionIndex, SessionInfo, Store, Task, sessions_dir};
 use crate::transcript::{Tail, Transcript};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -67,6 +71,18 @@ pub enum Hit {
     Entry(usize),
     Follow,
     Zoom,
+    Settings,
+    CloseSettings,
+    StatSelect(usize),
+    StatBar(usize),
+    StatRow(usize),
+    StatUp(usize),
+    StatDown(usize),
+    CostMode,
+    CtxDown,
+    CtxUp,
+    SaveSettings,
+    ResetSettings,
 }
 
 pub struct LogLine {
@@ -134,6 +150,8 @@ pub struct App {
     pub zoom: bool,
     pub log: Option<LogView>,
     pub picker: Option<Picker>,
+    pub config: Config,
+    pub settings: Option<Settings>,
     pub hits: Vec<(Rect, Hit)>,
     pub list_area: Rect,
     pub log_area: Rect,
@@ -146,13 +164,14 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(cwd: Option<PathBuf>, session: Option<String>) -> anyhow::Result<Self> {
+    pub fn new(cwd: Option<PathBuf>, session: Option<String>, config: Config) -> anyhow::Result<Self> {
         let start = match cwd {
             Some(c) => c,
             None => std::env::current_dir()?,
         };
-        let root = project_root(&start);
-        let mut store = Store::new(root.join(".omo").join("senpi-task"));
+        let location = locate(&start);
+        let root = location.root;
+        let mut store = Store::new(location.tasks);
         store.refresh();
         let mut app = Self {
             index: SessionIndex::new(sessions_dir(&root)),
@@ -169,6 +188,8 @@ impl App {
             zoom: false,
             log: None,
             picker: None,
+            config,
+            settings: None,
             hits: Vec::new(),
             list_area: Rect::default(),
             log_area: Rect::default(),
@@ -392,6 +413,10 @@ impl App {
             self.quit = true;
             return;
         }
+        if self.settings.is_some() {
+            crate::settings::on_key(self, k);
+            return;
+        }
         if self.picker.is_some() {
             self.picker_key(k.code);
             return;
@@ -401,6 +426,7 @@ impl App {
         match k.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('s') => self.open_picker(),
+            KeyCode::Char('c') => self.open_settings(),
             KeyCode::Char('t') => self.switch_tab(if self.tab == Tab::Tasks { Tab::Dag } else { Tab::Tasks }),
             KeyCode::Tab | KeyCode::BackTab => {
                 self.focus = if self.focus == Focus::List {
@@ -511,7 +537,7 @@ impl App {
                     .map(|(_, h)| h.clone());
                 match hit {
                     Some(h) => self.activate(h),
-                    None if self.picker.is_some() => {}
+                    None if self.picker.is_some() || self.settings.is_some() => {}
                     None if self.log_area.contains(pos) => self.focus = Focus::Log,
                     None if self.list_area.contains(pos) => self.focus = Focus::List,
                     None => {}
@@ -520,6 +546,9 @@ impl App {
             }
             _ => return,
         };
+        if self.settings.is_some() {
+            return;
+        }
         self.dirty = true;
         if let Some(p) = self.picker.as_mut() {
             p.scroll = (p.scroll as isize + delta).max(0) as usize;
@@ -557,10 +586,69 @@ impl App {
             }
             Hit::Follow => self.follow_bottom(),
             Hit::Zoom => self.zoom = !self.zoom,
+            Hit::Settings if self.settings.is_some() => self.settings = None,
+            Hit::Settings => self.open_settings(),
+            Hit::CloseSettings => self.settings = None,
+            Hit::StatSelect(i) => self.settings_op(Op::Select(i)),
+            Hit::StatBar(i) => self.settings_op(Op::Bar(i)),
+            Hit::StatRow(i) => self.settings_op(Op::Row(i)),
+            Hit::StatUp(i) => self.settings_op(Op::Up(i)),
+            Hit::StatDown(i) => self.settings_op(Op::Down(i)),
+            Hit::CostMode => self.settings_op(Op::Cost),
+            Hit::CtxDown => self.settings_op(Op::CtxDown),
+            Hit::CtxUp => self.settings_op(Op::CtxUp),
+            Hit::ResetSettings => self.settings_op(Op::Reset),
+            Hit::SaveSettings => self.save_settings(),
         }
     }
 
+    pub fn current_stats(&self, task: &Task) -> Stats {
+        match self.log.as_ref().filter(|l| l.task == task.id) {
+            Some(log) => task.stats.merge(&log.transcript.usage.stats()),
+            None => task.stats.clone(),
+        }
+    }
+
+    /// Model of the task whose log is open; the settings context-limit row edits this one.
+    pub fn log_model(&self) -> Option<String> {
+        let task = self.store.task(&self.log.as_ref()?.task)?;
+        Some(task.model.clone()).filter(|m| !m.is_empty())
+    }
+
+    pub fn open_settings(&mut self) {
+        self.picker = None;
+        self.settings = Some(Settings::default());
+        self.dirty = true;
+    }
+
+    pub fn settings_op(&mut self, op: Op) {
+        let model = self.log_model();
+        let Some(s) = self.settings.as_mut() else { return };
+        if crate::settings::apply(s, &mut self.config, model.as_deref(), op) {
+            self.stats_changed();
+        }
+    }
+
+    pub fn stats_changed(&mut self) {
+        self.dirty = true;
+        if let Some(log) = self.log.as_mut() {
+            log.dirty = true;
+        }
+    }
+
+    pub fn save_settings(&mut self) {
+        let status = match self.config.save() {
+            Ok(path) => format!("saved to {}", path.display()),
+            Err(e) => format!("save failed: {e:#}"),
+        };
+        if let Some(s) = self.settings.as_mut() {
+            s.status = Some(status);
+        }
+        self.dirty = true;
+    }
+
     pub fn open_picker(&mut self) {
+        self.settings = None;
         let sessions = self.index.list(&self.store);
         let selected = sessions
             .iter()

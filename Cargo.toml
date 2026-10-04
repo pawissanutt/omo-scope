@@ -1,6 +1,6 @@
 [package]
 name = "omo-scope"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.94"
 description = "View-only, mouse-driven TUI for OmO subagent tasks, DAG runs and live child transcripts"
@@ -12,6 +12,7 @@ anyhow = "1.0.104"
 jiff = "0.2.37"
 ratatui = "0.30.2"
 serde_json = "1.0.151"
+sha2 = "0.11.0"
 unicode-width = "0.2.2"
 
 [profile.release]

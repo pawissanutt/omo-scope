@@ -59,6 +59,67 @@ fn cwd_encoding_matches_senpi_layout() {
 }
 
 #[test]
+fn task_reads_provider_and_run_stats() {
+    let v = json!({
+        "task_id": "st_stats",
+        "status": "completed",
+        "resolved_model": {"provider": "chatgpt-subscription", "model_id": "gpt-5"},
+        "requested_model": {"provider": "ignored"},
+        "model": "other/also-ignored",
+        "run_stats": {
+            "turns": 74,
+            "tool_calls": 85,
+            "output_tokens": 16058,
+            "input_tokens": 312289,
+            "cache_read_tokens": 21080960,
+            "total_tokens": 21409307,
+            "tokens_per_second": 23,
+            "cost_usd": 9.2632124,
+            "cache_hit_rate_run": 0.985,
+            "token_status": "complete",
+            "cost_status": "reported"
+        }
+    });
+    let t = Task::from_json(&v).unwrap();
+    assert_eq!(provider_of(&v), "chatgpt-subscription");
+    assert_eq!(t.model, "gpt-5");
+    assert_eq!(t.stats.total, Some(21_409_307));
+    assert_eq!(t.stats.turns, Some(74));
+    assert_eq!(t.stats.input, Some(312_289));
+    assert_eq!(t.stats.output, Some(16_058));
+    assert_eq!(t.stats.cache_read, Some(21_080_960));
+    assert_eq!(t.stats.total, Some(21_409_307));
+    assert_eq!(t.stats.tps, Some(23.0));
+    assert_eq!(t.stats.cost, v["run_stats"]["cost_usd"].as_f64());
+    assert_eq!(t.stats.cache_rate, v["run_stats"]["cache_hit_rate_run"].as_f64());
+    assert!(t.stats.subscription);
+    assert!(!t.stats.partial);
+    assert_eq!(t.stats.reasoning, None);
+    assert_eq!(t.stats.context, None);
+    assert_eq!(t.stats.compactions, None);
+
+    let requested = json!({
+        "task_id": "st_req",
+        "requested_model": {"provider": "anthropic-subscription"},
+        "model": "openai/gpt-5"
+    });
+    let t = Task::from_json(&requested).unwrap();
+    assert_eq!(provider_of(&requested), "anthropic-subscription");
+    assert!(t.stats.subscription);
+
+    let prefixed = json!({"task_id": "st_fb", "model": "openai/gpt-5", "run_stats": {"token_status": "partial"}});
+    let t = Task::from_json(&prefixed).unwrap();
+    assert_eq!(provider_of(&prefixed), "openai");
+    assert!(t.stats.partial);
+    assert!(!t.stats.subscription);
+
+    let bare = json!({"task_id": "st_bare", "model": "gpt-5"});
+    let t = Task::from_json(&bare).unwrap();
+    assert_eq!(provider_of(&bare), "");
+    assert_eq!(t.stats, crate::stats::Stats::default());
+}
+
+#[test]
 fn user_title_skips_injected_tag_blocks() {
     let content = json!([{"type": "text", "text": "<system-reminder>\nnoise\n</system-reminder>\n\nFix the bug"}]);
     assert_eq!(user_title(&content), "Fix the bug");

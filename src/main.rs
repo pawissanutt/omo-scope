@@ -1,7 +1,11 @@
 mod app;
+mod config;
 mod diff;
 mod herdr;
 mod live;
+mod locate;
+mod settings;
+mod stats;
 mod store;
 mod text;
 mod transcript;
@@ -15,22 +19,25 @@ use anyhow::{Context, bail};
 use ratatui::crossterm::event::{self, Event};
 
 use crate::app::App;
+use crate::config::Config;
 
 const USAGE: &str = "\
 omo-scope - view-only TUI for OmO subagent tasks, DAG runs and live child transcripts
 
 Usage:
-  omo-scope [--cwd DIR] [--session ID] [--close-pane]
-  omo-scope open [--cwd DIR] [--session ID] [--ratio 0.6]
+  omo-scope [--cwd DIR] [--session ID] [--stats LIST] [--close-pane]
+  omo-scope open [--cwd DIR] [--session ID] [--stats LIST] [--ratio 0.6]
 
   open           split the current Herdr pane and run the viewer beside it (no focus change)
-  --cwd DIR      project directory (default: nearest ancestor with .omo/senpi-task)
+  --cwd DIR      project directory (default: nearest ancestor with an OmO task store)
   --session ID   parent OmO session (default: $PI_SESSION_ID, else the newest session)
+  --stats LIST   comma-separated title-bar stats for this run, or `none`
+                 (turns,tools,tps,ctx,cache,cost,io,reasoning,compact,tok)
   --ratio R      share of the width kept by the current pane when opening (default 0.6)
   --close-pane   close this Herdr pane when the viewer quits
 
 Keys: click/wheel anywhere, s sessions, t tasks/DAG, z zoom log, x expand all,
-      f follow, Tab focus, j/k move, q quit";
+      f follow, c settings, Tab focus, j/k move, q quit";
 
 #[derive(Default)]
 struct Opts {
@@ -38,6 +45,7 @@ struct Opts {
     cwd: Option<PathBuf>,
     session: Option<String>,
     ratio: Option<f32>,
+    stats: Option<String>,
     close_pane: bool,
 }
 
@@ -52,6 +60,7 @@ fn parse(mut args: impl Iterator<Item = String>) -> anyhow::Result<Option<Opts>>
             "open" => o.open = true,
             "--cwd" => o.cwd = Some(value(&mut args, &a)?.into()),
             "--session" => o.session = Some(value(&mut args, &a)?),
+            "--stats" => o.stats = Some(value(&mut args, &a)?),
             "--ratio" => {
                 let r: f32 = value(&mut args, &a)?.parse().context("--ratio must be a number")?;
                 if !(0.1..=0.9).contains(&r) {
@@ -125,14 +134,19 @@ fn main() -> anyhow::Result<()> {
     let Some(opts) = parse(std::env::args().skip(1))? else {
         return Ok(());
     };
+    let mut config = Config::load();
+    if let Some(list) = &opts.stats {
+        config.set_bar_list(list)?;
+    }
     if opts.open {
         let start = match opts.cwd {
             Some(c) => c,
             None => std::env::current_dir()?,
         };
-        return herdr::open(&store::project_root(&start), opts.session, opts.ratio.unwrap_or(0.6));
+        let root = locate::locate(&start).root;
+        return herdr::open(&root, opts.session, opts.stats, opts.ratio.unwrap_or(0.6));
     }
-    let mut app = App::new(opts.cwd, opts.session)?;
+    let mut app = App::new(opts.cwd, opts.session, config)?;
     let result = run(&mut app);
     ratatui::restore();
     result?;

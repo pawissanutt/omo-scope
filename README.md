@@ -25,6 +25,8 @@ transport to install.
 - **File edits as diffs**: `apply_patch`, `write` and `edit` calls render as colored diffs with
   `+N -M` counts.
 - **Reasoning**: thinking blocks in preview, full or hidden mode.
+- **Stats**: turns, tools, tok/s, context use, cache hits and cost in the log title bar and
+  task rows, picked and ordered from a settings menu.
 - **Mouse first**: click rows, tabs, log entries and the session title; wheel scrolling; a
   draggable splitter between the list and the log.
 - **Herdr side pane**: `omo-scope open` splits your current [Herdr](https://herdr.dev) pane
@@ -39,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/pawissanutt/omo-scope/main/install.
 ```
 
 It installs to `~/.local/bin` after verifying the release checksum. Set
-`OMO_SCOPE_INSTALL_DIR` or `OMO_SCOPE_VERSION` (for example `v0.1.1`) to change that.
+`OMO_SCOPE_INSTALL_DIR` or `OMO_SCOPE_VERSION` (for example `v0.2.0`) to change that.
 From source: `cargo install --git https://github.com/pawissanutt/omo-scope`.
 
 ## Usage
@@ -51,7 +53,7 @@ omo-scope         # run in the current terminal
 
 From an OmO prompt, `!omo-scope open` follows the current session (`$PI_SESSION_ID`). Running
 `open` again reuses the existing pane, and `q` closes it. Options: `--cwd DIR`, `--session ID`,
-`--ratio 0.6`; see `omo-scope --help`.
+`--ratio 0.6`, `--stats LIST`; see `omo-scope --help`.
 
 ## Controls
 
@@ -65,17 +67,85 @@ From an OmO prompt, `!omo-scope open` follows the current session (`$PI_SESSION_
 | click `follow` | `f` / `End` | resume auto-scroll |
 | drag the `≡` bar | `+` `-` `=` | resize the list / log split (`=` resets) |
 | click `[zoom]` | `z` | show only the log |
+| click the gear in the log title bar | `c` | open the stats settings menu |
 | | `r` | reasoning: preview, full, off |
 | | `Tab` | move focus between list and log |
 | | `q` | quit |
 
+## Stats and settings
+
+The log title bar and each task-list row show their own ordered list of stats:
+
+| Key | Example | Meaning |
+|---|---|---|
+| `turns` | `74 turns` | model turns |
+| `tools` | `85 tools` | tool calls |
+| `tps` | `23 tok/s` | output tokens over generation time per message, time-to-first-token included |
+| `ctx` | `106k ctx`, `106k/400k ctx 26%` | context used, with the limit when known |
+| `cache` | `99% cache` | cache hit rate |
+| `cost` | `~$9.26` | list-price cost |
+| `io` | `312k in · 16k out` | input and output tokens |
+| `reasoning` | `2.1k think` | reasoning tokens |
+| `compact` | `⇣2` | compactions |
+| `tok` | `21M tok` | total tokens |
+
+Defaults: the bar shows `turns, tools, tps, ctx, cache, cost` and rows show `cost`, on task rows and
+DAG node rows alike. When space runs out, rows drop category and model first, then stats from the
+end of the list, keeping elapsed time. A bar too narrow for one line keeps the status on the title line and wraps
+the rest onto extra lines below it, so a narrow side pane still shows every stat.
+
+Finished tasks use OmO's `run_stats` from the task file. Running tasks are computed live from
+the transcript's per-message usage, so they update once per completed model message, not per
+token. Context and compactions always come from the transcript, so they show only for the task
+whose log is open. Other running tasks' rows show only what `run_stats` has, which is nothing
+until the task finishes.
+
+Cost is list price. For subscription providers (the provider name contains `subscription`) it's
+an estimate shown with `~`. The cost mode is `auto`, `always` or `never`; `never` hides it for
+subscriptions only. The context limit comes from a per-model override in the config, else from
+`contextWindow` in `~/.omo/agent/models.json` and `models-store.json` (the agent dir honors
+`$OMO_CODING_AGENT_DIR` and `$SENPI_CODING_AGENT_DIR`). With no known limit, only the count shows.
+
+Press `c` or click the gear in the log title bar to open the settings menu. Each stat has `[x]`
+checkboxes for bar and row, arrows to reorder and a live preview of the selected task's values.
+Below them sit the cost mode and the context limit for the selected task's model (128k, 200k,
+256k, 400k, 1M; stepping below 128k returns to auto), then Save, Reset defaults and Close.
+
+| Key | Action |
+|---|---|
+| `j` `k` / arrows | select |
+| `Space` / `b` | toggle in bar |
+| `w` | toggle in row |
+| `J` `K` | move the stat up or down |
+| `m` | cycle cost mode |
+| `[` `]` | context limit down / up |
+| `Enter` / `S` | save |
+| `R` | reset defaults |
+| `Esc` `c` `q` | close |
+
+Changes apply live; only Save persists them, atomically, to `$XDG_CONFIG_HOME/omo-scope/config`
+(else `~/.config/omo-scope/config`). Unknown lines are ignored:
+
+```
+bar = turns, tools, tps, ctx, cache, cost
+row = cost
+cost = auto
+ctx-limit.gpt-6-astra = 400000
+```
+
+`--stats LIST` overrides the bar list for one run (comma-separated keys, or `none`);
+`omo-scope open` forwards it to the new pane.
+
 ## How it works
 
-omo-scope polls OmO's on-disk state four times a second and reads only what changed:
+omo-scope polls OmO's on-disk state four times a second and reads only what changed. The task
+store `<store>` is found automatically for the nearest ancestor of the start directory:
+`~/.omo/agent/projects/<name>-<sha256(path)[..12]>/senpi-task` (current OmO) or
+`<project>/.omo/senpi-task` (older OmO); if both exist, the one updated last wins.
 
-- `<project>/.omo/senpi-task/tasks/*.json`: task records (status, model, timing, tokens)
-- `<project>/.omo/senpi-task/dag/runs/*.json`: DAG checkpoints
-- `<project>/.omo/senpi-task/children/<task>/sessions/...jsonl`: child transcripts, tailed incrementally
+- `<store>/tasks/*.json`: task records (status, model, timing, tokens)
+- `<store>/dag/runs/*.json`: DAG checkpoints
+- `<store>/children/<task>/sessions/...jsonl`: child transcripts, tailed incrementally
 - `~/.omo/agent/sessions/`: session titles for the picker
 
 Updates arrive per transcript entry. OmO keeps token deltas in memory, so text appears when

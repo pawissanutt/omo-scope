@@ -59,7 +59,7 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-pub fn open(root: &Path, session: Option<String>, ratio: f32) -> anyhow::Result<()> {
+pub fn open(root: &Path, session: Option<String>, stats: Option<String>, ratio: f32) -> anyhow::Result<()> {
     let parent = std::env::var("HERDR_PANE_ID")
         .ok()
         .filter(|s| !s.is_empty())
@@ -103,6 +103,9 @@ pub fn open(root: &Path, session: Option<String>, ratio: f32) -> anyhow::Result<
         .filter(|s| !s.is_empty())
     {
         cmd.extend(["--session".into(), quote(&s)]);
+    }
+    if let Some(list) = stats {
+        cmd.extend(["--stats".into(), quote(&list)]);
     }
     pane(&["run", &id, &cmd.join(" ")])?;
     std::fs::create_dir_all(record.parent().unwrap_or(Path::new(".")))?;

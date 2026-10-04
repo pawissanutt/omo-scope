@@ -80,6 +80,38 @@ fn eval_cells_expose_embedded_shell_commands() {
 }
 
 #[test]
+fn push_feeds_usage_from_assistant_and_compaction_lines() {
+    let mut t = Transcript::default();
+    t.push(&json!({
+        "type": "message",
+        "timestamp": "1970-01-01T00:00:01Z",
+        "message": {
+            "role": "assistant",
+            "provider": "chatgpt-subscription",
+            "timestamp": 0,
+            "content": [{"type": "toolCall", "id": "c1", "name": "bash", "arguments": {"command": "true"}}],
+            "usage": {
+                "input": 10,
+                "output": 4,
+                "cacheRead": 6,
+                "cacheWrite": 0,
+                "reasoning": 0,
+                "totalTokens": 20,
+                "cost": {"total": 0.1}
+            }
+        }
+    }));
+    t.push(&json!({"type": "compaction", "tokensBefore": 100, "summary": "s"}));
+    let s = t.usage.stats();
+    assert_eq!(s.turns, Some(1));
+    assert_eq!(s.tool_calls, Some(1));
+    assert_eq!(s.total, Some(20));
+    assert_eq!(s.compactions, Some(1));
+    assert!(s.subscription);
+    assert_eq!(t.entries.iter().filter(|e| e.kind == Kind::Tool).count(), 1);
+}
+
+#[test]
 fn hidden_custom_entries_are_skipped() {
     let mut t = Transcript::default();
     t.push(&json!({"type": "custom_message", "customType": "x", "content": "hidden", "display": false}));

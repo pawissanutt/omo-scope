@@ -7,6 +7,7 @@ use std::time::SystemTime;
 use jiff::Timestamp;
 use serde_json::Value;
 
+use crate::stats::Stats;
 use crate::text::{clip, sanitize};
 
 #[derive(Debug, Clone)]
@@ -22,9 +23,7 @@ pub struct Task {
     pub started: Option<Timestamp>,
     pub finished: Option<Timestamp>,
     pub updated: Option<Timestamp>,
-    pub turns: Option<u64>,
-    pub tool_calls: Option<u64>,
-    pub tokens: Option<u64>,
+    pub stats: Stats,
     pub error: Option<String>,
     pub session_path: Option<PathBuf>,
 }
@@ -35,6 +34,18 @@ fn ts(v: &Value) -> Option<Timestamp> {
 
 fn text_of(v: &Value) -> Option<String> {
     v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(sanitize)
+}
+
+fn provider_of(v: &Value) -> String {
+    text_of(&v["resolved_model"]["provider"])
+        .or_else(|| text_of(&v["requested_model"]["provider"]))
+        .or_else(|| {
+            let model = v["model"].as_str()?;
+            let (provider, _) = model.split_once('/')?;
+            let provider = sanitize(provider.trim());
+            (!provider.is_empty()).then_some(provider)
+        })
+        .unwrap_or_default()
 }
 
 pub fn valid_id(id: &str) -> bool {
@@ -51,7 +62,8 @@ impl Task {
         let model = text_of(&v["resolved_model"]["model_id"])
             .or_else(|| text_of(&v["model"]).map(|m| m.rsplit('/').next().unwrap_or(&m).to_string()))
             .unwrap_or_default();
-        let stats = &v["run_stats"];
+        let provider = provider_of(v);
+        let parsed = Stats::from_run_stats(&v["run_stats"], &provider);
         Some(Self {
             status: text_of(&v["status"]).unwrap_or_else(|| "unknown".into()),
             label: clip(crate::text::first_line(&label), 300),
@@ -65,9 +77,7 @@ impl Task {
             started: ts(&v["started_at"]),
             finished: ts(&v["terminal_at"]),
             updated: ts(&v["updated_at"]),
-            turns: stats["turns"].as_u64(),
-            tool_calls: stats["tool_calls"].as_u64(),
-            tokens: stats["total_tokens"].as_u64(),
+            stats: parsed,
             error: text_of(&v["error_message"]),
             session_path: v["host_session"]["session_path"].as_str().map(PathBuf::from),
             id,
@@ -501,12 +511,15 @@ fn user_title(content: &Value) -> String {
     String::new()
 }
 
-pub fn sessions_dir(project: &Path) -> PathBuf {
-    let agent = ["OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR"]
+pub fn agent_dir() -> PathBuf {
+    ["OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR"]
         .iter()
         .find_map(|k| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from))
-        .unwrap_or_else(|| home().join(".omo").join("agent"));
-    agent.join("sessions").join(encode_cwd(project))
+        .unwrap_or_else(|| home().join(".omo").join("agent"))
+}
+
+pub fn sessions_dir(project: &Path) -> PathBuf {
+    agent_dir().join("sessions").join(encode_cwd(project))
 }
 
 pub fn encode_cwd(project: &Path) -> String {
@@ -523,14 +536,6 @@ pub fn home() -> PathBuf {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("/"))
-}
-
-pub fn project_root(start: &Path) -> PathBuf {
-    start
-        .ancestors()
-        .find(|p| p.join(".omo").join("senpi-task").is_dir())
-        .unwrap_or(start)
-        .to_path_buf()
 }
 
 #[cfg(test)]

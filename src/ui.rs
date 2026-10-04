@@ -14,13 +14,13 @@ use crate::store::Task;
 use crate::text::{clip, first_line, fmt_duration, wrap};
 use crate::transcript::{Entry, Kind};
 
-const DIM: Style = Style::new().fg(Color::DarkGray);
+pub(crate) const DIM: Style = Style::new().fg(Color::DarkGray);
 const BAR: Style = Style::new().bg(Color::Indexed(236));
 const SEL: Style = Style::new().bg(Color::Indexed(238));
-const SEL_FOCUS: Style = Style::new().bg(Color::Indexed(24));
-const BOLD: Modifier = Modifier::BOLD;
+pub(crate) const SEL_FOCUS: Style = Style::new().bg(Color::Indexed(24));
+pub(crate) const BOLD: Modifier = Modifier::BOLD;
 
-struct Bar {
+pub(crate) struct Bar {
     area: Rect,
     x: u16,
     spans: Vec<Span<'static>>,
@@ -28,7 +28,7 @@ struct Bar {
 }
 
 impl Bar {
-    fn new(area: Rect) -> Self {
+    pub(crate) fn new(area: Rect) -> Self {
         Self {
             area,
             x: area.x,
@@ -41,7 +41,7 @@ impl Bar {
         self.area.right().saturating_sub(self.x) as usize
     }
 
-    fn push(&mut self, text: impl Into<String>, style: Style, hit: Option<Hit>) {
+    pub(crate) fn push(&mut self, text: impl Into<String>, style: Style, hit: Option<Hit>) {
         let text = clip(&text.into(), self.room());
         let w = text.width() as u16;
         if w == 0 {
@@ -66,7 +66,7 @@ impl Bar {
         }
     }
 
-    fn finish(self, f: &mut Frame, base: Style) -> Vec<(Rect, Hit)> {
+    pub(crate) fn finish(self, f: &mut Frame, base: Style) -> Vec<(Rect, Hit)> {
         f.render_widget(Paragraph::new(Line::from(self.spans)).style(base), self.area);
         self.hits
     }
@@ -104,6 +104,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_footer(f, app, footer);
     if app.picker.is_some() {
         draw_picker(f, app, area);
+    }
+    if app.settings.is_some() {
+        crate::settings::draw(f, app, area);
     }
 }
 
@@ -169,7 +172,8 @@ fn row_line(app: &App, row: &Row, width: usize) -> Line<'static> {
     match row {
         Row::Task { id, depth } => match app.store.task(id) {
             Some(t) => {
-                let meta = task_meta(t, width);
+                let extras = vec![t.category.clone(), t.model.clone()];
+                let meta = row_meta(app, t, extras, width.saturating_sub(*depth * 2 + 15));
                 lay(
                     *depth * 2,
                     status_icon(&t.status),
@@ -200,19 +204,12 @@ fn row_line(app: &App, row: &Row, width: usize) -> Line<'static> {
             let Some(n) = app.store.run(run).and_then(|r| r.nodes.iter().find(|n| &n.id == node)) else {
                 return Line::styled(format!("   {node}"), DIM);
             };
-            let mut meta = Vec::new();
-            if !n.depends_on.is_empty() && width >= 60 {
-                meta.push(format!("<- {}", n.depends_on.join(",")));
-            }
-            if let Some(s) = n
-                .task_id
-                .as_deref()
-                .and_then(|t| app.store.task(t))
-                .and_then(Task::elapsed_secs)
-            {
-                meta.push(fmt_duration(s));
-            }
-            let meta = format!("{} ", meta.join(" · "));
+            let deps = (!n.depends_on.is_empty()).then(|| format!("<- {}", n.depends_on.join(",")));
+            let room = width.saturating_sub(17);
+            let meta = match n.task_id.as_deref().and_then(|t| app.store.task(t)) {
+                Some(t) => row_meta(app, t, deps.into_iter().collect(), room),
+                None => fit_meta(deps.into_iter().collect(), Vec::new(), String::new(), room),
+            };
             let label = format!("{} {}", n.id, n.label);
             lay(2, status_icon(&n.state), &label, Style::default(), meta, width)
         }
@@ -220,15 +217,39 @@ fn row_line(app: &App, row: &Row, width: usize) -> Line<'static> {
     }
 }
 
-fn task_meta(t: &Task, width: usize) -> String {
+fn row_meta(app: &App, t: &Task, extras: Vec<String>, room: usize) -> String {
+    let cfg = &app.config;
+    let stats = app.current_stats(t);
+    let limit = cfg.ctx_limit(&t.model);
+    let rendered = cfg
+        .row_keys()
+        .into_iter()
+        .filter_map(|k| stats.render(k, cfg.cost, limit))
+        .collect();
     let elapsed = t.elapsed_secs().map(fmt_duration).unwrap_or_default();
-    let parts: Vec<&str> = if width >= 70 {
-        vec![t.category.as_str(), t.model.as_str(), elapsed.as_str()]
-    } else {
-        vec![elapsed.as_str()]
-    };
-    let parts: Vec<&str> = parts.into_iter().filter(|p| !p.is_empty()).collect();
-    format!("{} ", parts.join(" · "))
+    fit_meta(extras, rendered, elapsed, room)
+}
+
+/// Drops `extras` first, then stats from the end of the list, so elapsed time stays longest.
+fn fit_meta(mut extras: Vec<String>, mut stats: Vec<String>, elapsed: String, room: usize) -> String {
+    loop {
+        let parts: Vec<&str> = extras
+            .iter()
+            .chain(&stats)
+            .chain(std::iter::once(&elapsed))
+            .map(String::as_str)
+            .filter(|p| !p.is_empty())
+            .collect();
+        let meta = format!("{} ", parts.join(" · "));
+        if meta.width() <= room {
+            return meta;
+        }
+        if !extras.is_empty() {
+            extras.remove(0);
+        } else if stats.pop().is_none() {
+            return meta;
+        }
+    }
 }
 
 fn lay(
@@ -271,8 +292,19 @@ fn draw_log(f: &mut Frame, app: &mut App, area: Rect) {
     if area.height == 0 {
         return;
     }
-    draw_log_title(f, app, Rect::new(area.x, area.y, area.width, 1));
-    let body = Rect::new(area.x, area.y + 1, area.width, area.height - 1);
+    let layout = title_layout(app, area.width as usize);
+    let extra = layout.as_ref().map_or(&[][..], |(_, lines)| lines.as_slice());
+    let head = 1 + (extra.len() as u16).min(area.height.saturating_sub(2));
+    for (i, line) in extra.iter().take(usize::from(head - 1)).enumerate() {
+        let row = Rect::new(area.x, area.y + 1 + i as u16, area.width, 1);
+        f.render_widget(
+            Paragraph::new(Line::styled(line.clone(), BAR.fg(Color::Gray))).style(BAR),
+            row,
+        );
+    }
+    let title = Rect::new(area.x, area.y, area.width, head);
+    draw_log_title(f, app, title, layout.map(|(meta, _)| meta));
+    let body = Rect::new(area.x, area.y + head, area.width, area.height - head);
     let reasoning = app.reasoning;
     let Some(log) = app.log.as_mut() else {
         f.render_widget(
@@ -315,7 +347,58 @@ fn draw_log(f: &mut Frame, app: &mut App, area: Rect) {
     app.hits.extend(hits);
 }
 
-fn draw_log_title(f: &mut Frame, app: &mut App, area: Rect) {
+/// Title-line meta plus extra lines: everything stays on one line when it fits; otherwise the title
+/// keeps the status (and model/elapsed when they fit) and the rest wraps below for narrow panes.
+fn title_layout(app: &App, width: usize) -> Option<(String, Vec<String>)> {
+    let log = app.log.as_ref()?;
+    let t = app.store.task(&log.task)?;
+    let mut fixed = vec![t.status.clone()];
+    fixed.extend((!t.model.is_empty()).then(|| t.model.clone()));
+    fixed.extend(t.elapsed_secs().map(fmt_duration));
+    fixed.extend((log.bad > 0).then(|| format!("{} bad lines", log.bad)));
+    let cfg = &app.config;
+    let stats = app.current_stats(t);
+    let limit = cfg.ctx_limit(&t.model);
+    let shown: Vec<String> = cfg
+        .bar_keys()
+        .into_iter()
+        .filter_map(|k| stats.render(k, cfg.cost, limit))
+        .collect();
+    let fits = |m: &str| m.width() + TITLE_TAIL + 20 <= width;
+    let join = |parts: &[String]| format!(" {} ", parts.join(" · "));
+    let all = join(&[fixed.as_slice(), shown.as_slice()].concat());
+    if fits(&all) {
+        return Some((all, Vec::new()));
+    }
+    let keep = if fits(&join(&fixed)) { fixed.len() } else { 1 };
+    let rest = [&fixed[keep..], shown.as_slice()].concat();
+    Some((join(&fixed[..keep]), wrap_parts(&rest, width)))
+}
+
+fn wrap_parts(parts: &[String], width: usize) -> Vec<String> {
+    let room = width.saturating_sub(2).max(1);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for p in parts {
+        let next = if cur.is_empty() {
+            p.clone()
+        } else {
+            format!("{cur} · {p}")
+        };
+        if cur.is_empty() || next.width() <= room {
+            cur = next;
+        } else {
+            lines.push(std::mem::replace(&mut cur, p.clone()));
+        }
+    }
+    lines.extend((!cur.is_empty()).then_some(cur));
+    lines.into_iter().map(|l| format!(" {}", clip(&l, room))).collect()
+}
+
+const TITLE_TAIL: usize = 11;
+
+fn draw_log_title(f: &mut Frame, app: &mut App, area: Rect, meta: Option<String>) {
+    let line = Rect::new(area.x, area.y, area.width, 1);
     let focused = app.focus == Focus::Log || app.zoom;
     let base = if focused { BAR.add_modifier(BOLD) } else { BAR };
     let base = if app.dragging {
@@ -325,36 +408,28 @@ fn draw_log_title(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let rule = base.fg(Color::DarkGray);
     let zoom = if app.zoom { " [list] " } else { " [zoom] " };
-    let mut bar = Bar::new(area);
+    let gear = " ⚙ ";
+    let tail_w = gear.width() + zoom.width();
+    let mut bar = Bar::new(line);
     if !app.zoom {
         bar.push(" ≡", rule, None);
     }
-    let current = app.log.as_ref().and_then(|l| Some((app.store.task(&l.task)?, l.bad)));
+    let current = app.log.as_ref().and_then(|l| app.store.task(&l.task)).zip(meta);
     match current {
-        Some((t, bad)) => {
+        Some((t, meta)) => {
             let (icon, color) = status_icon(&t.status);
-            let mut meta = vec![t.status.clone()];
-            meta.extend((!t.model.is_empty()).then(|| t.model.clone()));
-            meta.extend(t.elapsed_secs().map(fmt_duration));
-            meta.extend(t.turns.map(|n| format!("{n} turns")));
-            meta.extend(t.tool_calls.map(|n| format!("{n} tools")));
-            meta.extend(t.tokens.map(|n| format!("{}k tok", n / 1000)));
-            meta.extend((bad > 0).then(|| format!("{bad} bad lines")));
-            let mut meta = format!(" {} ", meta.join(" · "));
-            if meta.width() + zoom.width() + 20 > area.width as usize {
-                meta = format!(" {} ", t.status);
-            }
             bar.push(format!(" {icon} "), base.fg(color), None);
-            let room = bar.room().saturating_sub(meta.width() + zoom.width());
+            let room = bar.room().saturating_sub(meta.width() + tail_w);
             bar.push(clip(&format!("{} {}", t.id, t.label), room), base, None);
-            bar.fill_to(meta.width() + zoom.width(), rule);
+            bar.fill_to(meta.width() + tail_w, rule);
             bar.push(meta, base.fg(Color::Gray), None);
         }
         None => {
             bar.push(" transcript", base, None);
-            bar.fill_to(zoom.width(), rule);
+            bar.fill_to(tail_w, rule);
         }
     }
+    bar.push(gear, base.fg(Color::Cyan), Some(Hit::Settings));
     bar.push(zoom, base.fg(Color::Cyan), Some(Hit::Zoom));
     let hits = bar.finish(f, base);
     if !app.zoom {
@@ -549,7 +624,7 @@ fn draw_footer(f: &mut Frame, app: &mut App, area: Rect) {
         bar.push(format!(" {s} "), BAR.fg(Color::Cyan), None);
     }
     let mut hint = format!(
-        " r:reasoning {} s:session t:tab z:zoom x:expand q:quit ",
+        " r:reasoning {} s:session t:tab z:zoom x:expand c:settings q:quit ",
         app.reasoning.label()
     );
     if app.store.invalid() > 0 {

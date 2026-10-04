@@ -7,6 +7,7 @@ use jiff::Timestamp;
 use serde_json::Value;
 
 use crate::diff::{self, DiffLine};
+use crate::stats::Usage;
 use crate::text::{clip, first_line, sanitize};
 
 pub struct Tail {
@@ -122,11 +123,13 @@ pub struct Transcript {
     pub entries: Vec<Entry>,
     pub last_at: Option<Timestamp>,
     pub cwd: Option<PathBuf>,
+    pub usage: Usage,
     open: HashMap<String, usize>,
 }
 
 impl Transcript {
     pub fn push(&mut self, v: &Value) {
+        self.usage.push(v);
         let at = v["timestamp"].as_str().and_then(|s| s.parse::<Timestamp>().ok());
         if at.is_some() {
             self.last_at = at;
